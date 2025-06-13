@@ -456,6 +456,9 @@ class Postgresql(object):
         :param tags: reference to an object implementing :class:`Tags` interface.
         """
         self._cluster_info_state = {}
+        
+        # Store cluster information for synchronized_standby_slots calculation
+        self._cluster = cluster
 
         if not tags:
             return

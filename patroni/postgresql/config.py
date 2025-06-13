@@ -538,12 +538,67 @@ class ConfigHandler(object):
         except IOError:
             logger.exception('unable to restore configuration files from backup')
 
+    def _calculate_synchronized_standby_slots(self, configuration: CaseInsensitiveDict) -> Optional[str]:
+        """Calculate synchronized_standby_slots dynamically for this specific node.
+        
+        This method solves the PostgreSQL 17 failover death spiral by ensuring each node
+        has a unique synchronized_standby_slots value that excludes itself, preventing
+        the "can't sync to itself" configuration inheritance problem.
+        
+        :returns: comma-separated list of physical replication slot names excluding this node,
+                 or None if synchronized_standby_slots should not be set.
+        """
+        # Only apply this logic if PostgreSQL 17+ and synchronized_standby_slots template is configured
+        if self.pg_version < 170000:
+            return None
+            
+        # Check if we have a template configured (signals that we want dynamic calculation)
+        template_value = configuration.get('synchronized_standby_slots_template')
+        if not template_value:
+            return None
+            
+        # Get cluster information
+        cluster = getattr(self._postgresql, '_cluster', None)
+        if not cluster or not cluster.members:
+            return None
+            
+        # Get physical replication slot names for all members except this node
+        current_node_name = self._postgresql.name
+        replica_slot_names = []
+        
+        for member in cluster.members:
+            if member.name != current_node_name and not member.nostream:
+                # Create physical slot name for this member
+                from ..dcs import slot_name_from_member_name
+                slot_name = slot_name_from_member_name(member.name)
+                replica_slot_names.append(slot_name)
+        
+        if not replica_slot_names:
+            return None
+            
+        # Return comma-separated list of slot names
+        return ','.join(replica_slot_names)
+
     def write_postgresql_conf(self, configuration: Optional[CaseInsensitiveDict] = None) -> None:
         # rename the original configuration if it is necessary
         if 'custom_conf' not in self._config and not os.path.exists(self._postgresql_base_conf):
             os.rename(self._postgresql_conf, self._postgresql_base_conf)
 
         configuration = configuration or self._server_parameters.copy()
+        
+        # CRITICAL FIX: Calculate synchronized_standby_slots uniquely for each node
+        # This prevents the PostgreSQL 17 failover death spiral where nodes inherit
+        # invalid synchronized_standby_slots configuration via DCS that includes themselves
+        dynamic_synchronized_standby_slots = self._calculate_synchronized_standby_slots(configuration)
+        if dynamic_synchronized_standby_slots is not None:
+            # Remove the template and any existing synchronized_standby_slots from DCS
+            configuration.pop('synchronized_standby_slots_template', None)
+            configuration.pop('synchronized_standby_slots', None)
+            # Set the dynamically calculated value
+            configuration['synchronized_standby_slots'] = dynamic_synchronized_standby_slots
+            logger.info("Setting synchronized_standby_slots dynamically for node %s: %s", 
+                       self._postgresql.name, dynamic_synchronized_standby_slots)
+        
         # Due to the permanent logical replication slots configured we have to enable hot_standby_feedback
         if self._postgresql.enforce_hot_standby_feedback:
             configuration['hot_standby_feedback'] = 'on'
@@ -1426,3 +1481,10 @@ class ConfigHandler(object):
             if any, otherwise ``None``.
         """
         return (self.get('parameters') or EMPTY_DICT).get('synchronous_standby_names')
+
+    def verify_custom_synchronized_standby_slots_fix(self) -> str:
+        """Verification method to confirm our custom synchronized_standby_slots fix is active.
+        
+        :returns: version string confirming our fix is present
+        """
+        return "CUSTOM_SYNCHRONIZED_STANDBY_SLOTS_FIX_v1.0_ACTIVE"
