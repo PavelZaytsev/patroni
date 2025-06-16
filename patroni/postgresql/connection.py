@@ -51,7 +51,7 @@ class NamedConnection:
         """
         with self._lock:
             if not self._connection or self._connection.closed != 0:
-                logger.info("establishing a new patroni %s connection to postgres", self._name)
+                logger.info("establishing a new patroni %s connection to postgres!", self._name)
                 self._connection = psycopg.connect(**self._conn_kwargs)
                 self.server_version = getattr(self._connection, 'server_version', 0)
         return self._connection
