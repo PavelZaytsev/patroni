@@ -2243,13 +2243,18 @@ class Ha(object):
                 # with the actual cluster topology to prevent logical replication data loss
                 if not is_promoting and self.state_handler.is_running() and hasattr(self.state_handler, 'config'):
                     try:
+                        logger.info("DEBUG: [HA-LOOP] Calling update_synchronized_standby_slots_if_needed() for node %s after replication slot sync",
+                                   self.state_handler.name)
                         config_updated = self.state_handler.config.update_synchronized_standby_slots_if_needed()
                         if config_updated:
-                            logger.info("DEBUG: synchronized_standby_slots configuration updated, triggering reload for node %s",
+                            logger.info("DEBUG: [HA-LOOP] synchronized_standby_slots configuration updated, triggering reload for node %s",
                                        self.state_handler.name)
                             self.state_handler.reload()
+                        else:
+                            logger.debug("DEBUG: [HA-LOOP] synchronized_standby_slots unchanged for node %s",
+                                        self.state_handler.name)
                     except Exception as e:
-                        logger.error("DEBUG: Failed to update synchronized_standby_slots in HA loop: %r", e)
+                        logger.error("DEBUG: [HA-LOOP] Failed to update synchronized_standby_slots in HA loop: %r", e)
 
                 if not self.state_handler.cb_called:
                     if not is_promoting and not self.state_handler.is_primary():
@@ -2286,9 +2291,17 @@ class Ha(object):
                     # Update synchronized_standby_slots in failsafe mode for logical replication consistency
                     if hasattr(self.state_handler, 'config'):
                         try:
-                            self.state_handler.config.update_synchronized_standby_slots_if_needed()
+                            logger.info("DEBUG: [FAILSAFE] Calling update_synchronized_standby_slots_if_needed() for node %s in failsafe mode",
+                                       self.state_handler.name)
+                            config_updated = self.state_handler.config.update_synchronized_standby_slots_if_needed()
+                            if config_updated:
+                                logger.info("DEBUG: [FAILSAFE] synchronized_standby_slots updated in failsafe mode for node %s",
+                                           self.state_handler.name)
+                            else:
+                                logger.debug("DEBUG: [FAILSAFE] synchronized_standby_slots unchanged in failsafe mode for node %s",
+                                            self.state_handler.name)
                         except Exception as e:
-                            logger.error("DEBUG: Failed to update synchronized_standby_slots in failsafe mode: %r", e)
+                            logger.error("DEBUG: [FAILSAFE] Failed to update synchronized_standby_slots in failsafe mode: %r", e)
                     return 'continue to run as a leader because failsafe mode is enabled and all members are accessible'
                 self._failsafe.set_is_active(0)
                 logger.info('demoting self because DCS is not accessible and I was a leader')
@@ -2299,9 +2312,17 @@ class Ha(object):
                 # Update synchronized_standby_slots for replicas in DCS failure mode
                 if hasattr(self.state_handler, 'config'):
                     try:
-                        self.state_handler.config.update_synchronized_standby_slots_if_needed()
+                        logger.info("DEBUG: [DCS-FAIL] Calling update_synchronized_standby_slots_if_needed() for node %s in DCS failure mode",
+                                   self.state_handler.name)
+                        config_updated = self.state_handler.config.update_synchronized_standby_slots_if_needed()
+                        if config_updated:
+                            logger.info("DEBUG: [DCS-FAIL] synchronized_standby_slots updated in DCS failure mode for node %s",
+                                       self.state_handler.name)
+                        else:
+                            logger.debug("DEBUG: [DCS-FAIL] synchronized_standby_slots unchanged in DCS failure mode for node %s",
+                                        self.state_handler.name)
                     except Exception as e:
-                        logger.error("DEBUG: Failed to update synchronized_standby_slots in DCS failure mode: %r", e)
+                        logger.error("DEBUG: [DCS-FAIL] Failed to update synchronized_standby_slots in DCS failure mode: %r", e)
         return 'DCS is not accessible'
 
     def _sync_replication_slots(self, dcs_failed: bool) -> List[str]:
