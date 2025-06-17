@@ -2238,6 +2238,19 @@ class Ha(object):
             if (not self._async_executor.busy or is_promoting) and not self.state_handler.is_starting():
                 create_slots = self._sync_replication_slots(False)
 
+                # CRITICAL: Update synchronized_standby_slots for logical replication data consistency
+                # This ensures PostgreSQL 17's synchronized_standby_slots parameter stays consistent 
+                # with the actual cluster topology to prevent logical replication data loss
+                if not is_promoting and self.state_handler.is_running() and hasattr(self.state_handler, 'config'):
+                    try:
+                        config_updated = self.state_handler.config.update_synchronized_standby_slots_if_needed()
+                        if config_updated:
+                            logger.info("DEBUG: synchronized_standby_slots configuration updated, triggering reload for node %s",
+                                       self.state_handler.name)
+                            self.state_handler.reload()
+                    except Exception as e:
+                        logger.error("DEBUG: Failed to update synchronized_standby_slots in HA loop: %r", e)
+
                 if not self.state_handler.cb_called:
                     if not is_promoting and not self.state_handler.is_primary():
                         self._rewind.trigger_check_diverged_lsn()
@@ -2270,6 +2283,12 @@ class Ha(object):
                     self._failsafe.set_is_active(time.time())
                     self.watchdog.keepalive()
                     self._sync_replication_slots(True)
+                    # Update synchronized_standby_slots in failsafe mode for logical replication consistency
+                    if hasattr(self.state_handler, 'config'):
+                        try:
+                            self.state_handler.config.update_synchronized_standby_slots_if_needed()
+                        except Exception as e:
+                            logger.error("DEBUG: Failed to update synchronized_standby_slots in failsafe mode: %r", e)
                     return 'continue to run as a leader because failsafe mode is enabled and all members are accessible'
                 self._failsafe.set_is_active(0)
                 logger.info('demoting self because DCS is not accessible and I was a leader')
@@ -2277,6 +2296,12 @@ class Ha(object):
                 return 'demoted self because DCS is not accessible and I was a leader'
             else:
                 self._sync_replication_slots(True)
+                # Update synchronized_standby_slots for replicas in DCS failure mode
+                if hasattr(self.state_handler, 'config'):
+                    try:
+                        self.state_handler.config.update_synchronized_standby_slots_if_needed()
+                    except Exception as e:
+                        logger.error("DEBUG: Failed to update synchronized_standby_slots in DCS failure mode: %r", e)
         return 'DCS is not accessible'
 
     def _sync_replication_slots(self, dcs_failed: bool) -> List[str]:

@@ -539,19 +539,23 @@ class ConfigHandler(object):
             logger.exception('unable to restore configuration files from backup')
 
     def _calculate_synchronized_standby_slots(self, configuration: CaseInsensitiveDict) -> Optional[str]:
-        """Calculate synchronized_standby_slots dynamically for this specific node.
+        """Calculate synchronized_standby_slots from DCS cluster topology.
         
-        This method solves the PostgreSQL 17 failover death spiral by querying the local
-        PostgreSQL database for actual physical replication slots and using those
-        to set synchronized_standby_slots uniquely per node.
+        This method uses the DCS as a failure detector to determine which cluster members
+        are healthy and should be included in synchronized_standby_slots. This ensures
+        logical replication failover safety by keeping the parameter consistent with
+        actual cluster membership.
         
-        :returns: comma-separated list of physical replication slot names that exist locally,
+        The logic is:
+        1. Query DCS for current cluster members
+        2. Include all other healthy members (excluding self) in synchronized_standby_slots
+        3. This ensures logical WAL waits for all available physical replicas
+        
+        :returns: comma-separated list of healthy member names (excluding self),
                  or None if synchronized_standby_slots should not be set.
         """
         logger.info("DEBUG: _calculate_synchronized_standby_slots called for node %s, pg_version=%d", 
                     self._postgresql.name, self.pg_version)
-        logger.info("DEBUG: sync_replication_slots config value: %s", 
-                    configuration.get('sync_replication_slots'))
         
         # Only apply this logic if PostgreSQL 17+ 
         if self.pg_version < 170000:
@@ -565,42 +569,169 @@ class ConfigHandler(object):
                         configuration.get('sync_replication_slots'))
             return None
             
-        logger.info("DEBUG: Starting synchronized_standby_slots calculation for PostgreSQL 17+ node %s", 
-                   self._postgresql.name)
+        logger.info("DEBUG: Starting DCS-based synchronized_standby_slots calculation for PostgreSQL 17+ node %s", 
+                    self._postgresql.name)
         
+        # Get cluster topology from DCS (our failure detector)
         try:
-            # Query local PostgreSQL for physical replication slots
-            query = ("SELECT slot_name FROM pg_catalog.pg_replication_slots "
-                    "WHERE slot_type = 'physical' AND NOT temporary")
-            
-            logger.info("DEBUG: Executing query: %s", query)
-            query_result = self._postgresql.query(query)
-            logger.info("DEBUG: Query returned %d rows: %s", len(query_result), query_result)
-            
-            physical_slots = []
-            for i, row in enumerate(query_result):
-                slot_name = row[0]
-                logger.info("DEBUG: Row %d: slot_name='%s'", i, slot_name)
-                physical_slots.append(slot_name)
-            
-            logger.info("DEBUG: Found %d physical slots: %s", len(physical_slots), physical_slots)
-            
-            if not physical_slots:
-                logger.info("DEBUG: No physical replication slots found for synchronized_standby_slots on node %s", 
-                           self._postgresql.name)
+            healthy_members = self._get_healthy_cluster_members()
+            if not healthy_members:
+                logger.info("DEBUG: No other healthy members found for synchronized_standby_slots")
                 return None
                 
-            # Return comma-separated list of physical slot names
-            result = ','.join(physical_slots)
-            logger.info("DEBUG: Calculated synchronized_standby_slots for node %s: '%s'", 
+            result = ','.join(healthy_members)
+            logger.info("DEBUG: Calculated synchronized_standby_slots from DCS topology for node %s: '%s'", 
                        self._postgresql.name, result)
             return result
             
         except Exception as e:
-            logger.error("DEBUG: Failed to calculate synchronized_standby_slots: %r", e)
-            import traceback
-            logger.error("DEBUG: Traceback: %s", traceback.format_exc())
+            logger.error("DEBUG: Failed to calculate synchronized_standby_slots from DCS: %r", e)
+            # Fallback to static patterns for initial startup
+            return self._static_synchronized_standby_slots_fallback()
+
+    def _get_healthy_cluster_members(self) -> List[str]:
+        """Get list of healthy cluster members from DCS (excluding self).
+        
+        This is our failure detector - we trust the DCS to tell us who's healthy.
+        Physical replication slots in Patroni are typically named after member names.
+        """
+        healthy_members = []
+        current_node = self._postgresql.name
+        
+        try:
+            # Try to access DCS through the postgresql instance
+            cluster = None
+            if hasattr(self._postgresql, '_dcs') and self._postgresql._dcs:
+                cluster = self._postgresql._dcs.get_cluster()
+            elif hasattr(self._postgresql, 'dcs') and self._postgresql.dcs:
+                cluster = self._postgresql.dcs.get_cluster()
+            
+            if not cluster:
+                logger.info("DEBUG: No DCS cluster information available")
+                return []
+                
+            logger.info("DEBUG: DCS :", cluster)
+            
+            for member in cluster.members:
+                # Skip ourselves - we don't need our own slot in synchronized_standby_slots
+                if member.name == current_node:
+                    logger.info("DEBUG: Skipping self: %s", member.name)
+                    continue
+                    
+                # Include member if it's healthy/reachable
+                # In Patroni, if a member is in cluster.members, DCS considers it healthy
+                logger.info("DEBUG: Including healthy member: %s", member.name)
+                healthy_members.append(member.name)
+                
+            logger.info("DEBUG: Found %d healthy members (excluding self): %s", 
+                       len(healthy_members), healthy_members)
+            return healthy_members
+            
+        except Exception as e:
+            logger.error("DEBUG: Exception getting healthy members from DCS: %r", e)
+            return []
+
+    def _static_synchronized_standby_slots_fallback(self) -> Optional[str]:
+        """Static fallback when DCS is unavailable.
+        
+        Only used during initial startup when DCS might not be accessible yet.
+        Uses common naming patterns for multi-node setups.
+        """
+        current_node = self._postgresql.name
+        logger.info("DEBUG: Using static fallback for node: %s", current_node)
+        
+        # Common multi-node patterns
+        static_patterns = []
+        
+        # Pattern 1: patroni1, patroni2, patroni3
+        if current_node.startswith('patroni') and current_node[-1].isdigit():
+            node_num = int(current_node[-1])
+            for i in [1, 2, 3]:
+                if i != node_num:
+                    static_patterns.append(f'patroni{i}')
+        
+        # Pattern 2: postgres-0, postgres-1, postgres-2  
+        elif current_node.startswith('postgres-') and current_node.split('-')[-1].isdigit():
+            node_num = int(current_node.split('-')[-1])
+            for i in [0, 1, 2]:
+                if i != node_num:
+                    static_patterns.append(f'postgres-{i}')
+        
+        # Pattern 3: Generic numeric suffix
+        elif current_node[-1].isdigit():
+            base_name = current_node[:-1]
+            node_num = int(current_node[-1])
+            for i in [1, 2, 3]:
+                if i != node_num:
+                    static_patterns.append(f'{base_name}{i}')
+        
+        if static_patterns:
+            result = ','.join(static_patterns)
+            logger.info("DEBUG: Static fallback synchronized_standby_slots for node %s: '%s'", 
+                       current_node, result)
+            return result
+        else:
+            logger.info("DEBUG: No static pattern matches found for node %s", current_node)
             return None
+
+    def update_synchronized_standby_slots_if_needed(self) -> bool:
+        """Monitor DCS and update synchronized_standby_slots when cluster topology changes.
+        
+        This is our cluster membership change detector. It continuously monitors the DCS
+        for membership changes and updates synchronized_standby_slots accordingly.
+        
+        Use cases:
+        - Node joins cluster: Add to synchronized_standby_slots
+        - Node leaves cluster: Remove from synchronized_standby_slots  
+        - Node comes back online: Add back to synchronized_standby_slots
+        
+        :returns: True if configuration was updated and reload is needed, False otherwise.
+        """
+        if self.pg_version < 170000:
+            return False
+            
+        if not self._server_parameters.get('sync_replication_slots') == 'on':
+            return False
+            
+        if not self._postgresql.is_running():
+            return False
+            
+        try:
+            # Calculate what synchronized_standby_slots should be based on current DCS topology
+            healthy_members = self._get_healthy_cluster_members()
+            new_value = ','.join(healthy_members) if healthy_members else None
+            
+            current_value = self._server_parameters.get('synchronized_standby_slots')
+            
+            # Normalize for comparison (handle None, empty string, whitespace)
+            current_normalized = (current_value or '').strip()
+            new_normalized = (new_value or '').strip()
+            
+            if current_normalized != new_normalized:
+                logger.info("DEBUG: DCS topology change detected! synchronized_standby_slots update needed for node %s: '%s' -> '%s'", 
+                           self._postgresql.name, current_normalized, new_normalized)
+                
+                # Update the server parameters
+                if new_value:
+                    self._server_parameters['synchronized_standby_slots'] = new_value
+                    logger.info("DEBUG: Updated synchronized_standby_slots to '%s' based on DCS topology for node %s", 
+                               new_value, self._postgresql.name)
+                else:
+                    self._server_parameters.pop('synchronized_standby_slots', None)
+                    logger.info("DEBUG: Removed synchronized_standby_slots for node %s (no other healthy members)", 
+                               self._postgresql.name)
+                
+                # Write the updated configuration (will use pre-calculated value from _server_parameters)
+                self.write_postgresql_conf()
+                return True
+            else:
+                logger.debug("DEBUG: synchronized_standby_slots is consistent with DCS topology for node %s: '%s'", 
+                            self._postgresql.name, current_normalized)
+                return False
+                
+        except Exception as e:
+            logger.error("DEBUG: Failed to update synchronized_standby_slots from DCS: %r", e)
+            return False
 
     def write_postgresql_conf(self, configuration: Optional[CaseInsensitiveDict] = None) -> None:
         logger.info("DEBUG: write_postgresql_conf CALLED for node %s", self._postgresql.name)
@@ -617,18 +748,27 @@ class ConfigHandler(object):
         # CRITICAL FIX: Calculate synchronized_standby_slots uniquely for each node
         # This prevents the PostgreSQL 17 failover death spiral by querying actual
         # physical replication slots from the local PostgreSQL database
-        logger.info("DEBUG: About to call _calculate_synchronized_standby_slots")
-        dynamic_synchronized_standby_slots = self._calculate_synchronized_standby_slots(configuration)
-        logger.info("DEBUG: _calculate_synchronized_standby_slots returned: %s", dynamic_synchronized_standby_slots)
         
-        if dynamic_synchronized_standby_slots is not None:
-            logger.info("DEBUG: Setting synchronized_standby_slots to '%s' for node %s", 
-                       dynamic_synchronized_standby_slots, self._postgresql.name)
-            # Set the dynamically calculated value
-            configuration['synchronized_standby_slots'] = dynamic_synchronized_standby_slots
+        # Check if synchronized_standby_slots was already calculated by runtime update
+        if 'synchronized_standby_slots' in self._server_parameters:
+            logger.info("DEBUG: Using pre-calculated synchronized_standby_slots from _server_parameters: '%s'", 
+                       self._server_parameters.get('synchronized_standby_slots'))
+            # Use the value that was already calculated by update_synchronized_standby_slots_if_needed()
+            configuration['synchronized_standby_slots'] = self._server_parameters['synchronized_standby_slots']
         else:
-            logger.info("DEBUG: Not setting synchronized_standby_slots (returned None) for node %s", 
-                        self._postgresql.name)
+            # Calculate fresh (startup, bootstrap, or when runtime update hasn't run yet)
+            logger.info("DEBUG: About to call _calculate_synchronized_standby_slots")
+            dynamic_synchronized_standby_slots = self._calculate_synchronized_standby_slots(configuration)
+            logger.info("DEBUG: _calculate_synchronized_standby_slots returned: %s", dynamic_synchronized_standby_slots)
+            
+            if dynamic_synchronized_standby_slots is not None:
+                logger.info("DEBUG: Setting synchronized_standby_slots to '%s' for node %s", 
+                           dynamic_synchronized_standby_slots, self._postgresql.name)
+                # Set the dynamically calculated value
+                configuration['synchronized_standby_slots'] = dynamic_synchronized_standby_slots
+            else:
+                logger.info("DEBUG: Not setting synchronized_standby_slots (returned None) for node %s", 
+                            self._postgresql.name)
         
         # Due to the permanent logical replication slots configured we have to enable hot_standby_feedback
         if self._postgresql.enforce_hot_standby_feedback:
