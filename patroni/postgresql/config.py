@@ -538,7 +538,7 @@ class ConfigHandler(object):
         except IOError:
             logger.exception('unable to restore configuration files from backup')
 
-    def _calculate_synchronized_standby_slots(self, configuration: CaseInsensitiveDict) -> Optional[str]:
+    def _calculate_synchronized_standby_slots(self, configuration: CaseInsensitiveDict, cluster=None) -> Optional[str]:
         """Calculate synchronized_standby_slots from DCS cluster topology.
         
         This method uses the DCS as a failure detector to determine which cluster members
@@ -574,7 +574,7 @@ class ConfigHandler(object):
         
         # Get cluster topology from DCS (our failure detector)
         try:
-            healthy_members = self._get_healthy_cluster_members()
+            healthy_members = self._get_healthy_cluster_members(cluster)
             if not healthy_members:
                 logger.info("DEBUG: No other healthy members found for synchronized_standby_slots")
                 return None
@@ -589,28 +589,23 @@ class ConfigHandler(object):
             # Fallback to static patterns for initial startup
             return self._static_synchronized_standby_slots_fallback()
 
-    def _get_healthy_cluster_members(self) -> List[str]:
+    def _get_healthy_cluster_members(self, cluster=None) -> List[str]:
         """Get list of healthy cluster members from DCS (excluding self).
         
         This is our failure detector - we trust the DCS to tell us who's healthy.
         Physical replication slots in Patroni are typically named after member names.
+        
+        :param cluster: Cluster object from HA module, if available
         """
         healthy_members = []
         current_node = self._postgresql.name
         
         try:
-            # Try to access DCS through the postgresql instance
-            cluster = None
-            if hasattr(self._postgresql, '_dcs') and self._postgresql._dcs:
-                cluster = self._postgresql._dcs.get_cluster()
-            elif hasattr(self._postgresql, 'dcs') and self._postgresql.dcs:
-                cluster = self._postgresql.dcs.get_cluster()
-            
             if not cluster:
-                logger.info("DEBUG: No DCS cluster information available")
+                logger.info("DEBUG: No cluster information provided to _get_healthy_cluster_members")
                 return []
                 
-            logger.info("DEBUG: DCS :", cluster)
+            logger.info("DEBUG: Processing cluster with %d members", len(cluster.members))
             
             for member in cluster.members:
                 # Skip ourselves - we don't need our own slot in synchronized_standby_slots
@@ -628,7 +623,7 @@ class ConfigHandler(object):
             return healthy_members
             
         except Exception as e:
-            logger.error("DEBUG: Exception getting healthy members from DCS: %r", e)
+            logger.error("DEBUG: Exception getting healthy members from cluster: %r", e)
             return []
 
     def _static_synchronized_standby_slots_fallback(self) -> Optional[str]:
@@ -674,7 +669,7 @@ class ConfigHandler(object):
             logger.info("DEBUG: No static pattern matches found for node %s", current_node)
             return None
 
-    def update_synchronized_standby_slots_if_needed(self) -> bool:
+    def update_synchronized_standby_slots_if_needed(self, cluster=None) -> bool:
         """Monitor DCS and update synchronized_standby_slots when cluster topology changes.
         
         This is our cluster membership change detector. It continuously monitors the DCS
@@ -698,7 +693,7 @@ class ConfigHandler(object):
             
         try:
             # Calculate what synchronized_standby_slots should be based on current DCS topology
-            healthy_members = self._get_healthy_cluster_members()
+            healthy_members = self._get_healthy_cluster_members(cluster)
             new_value = ','.join(healthy_members) if healthy_members else None
             
             current_value = self._server_parameters.get('synchronized_standby_slots')

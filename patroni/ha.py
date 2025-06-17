@@ -2245,7 +2245,7 @@ class Ha(object):
                     try:
                         logger.info("DEBUG: [HA-LOOP] Calling update_synchronized_standby_slots_if_needed() for node %s after replication slot sync",
                                    self.state_handler.name)
-                        config_updated = self.state_handler.config.update_synchronized_standby_slots_if_needed()
+                        config_updated = self.state_handler.config.update_synchronized_standby_slots_if_needed(self.cluster)
                         if config_updated:
                             logger.info("DEBUG: [HA-LOOP] synchronized_standby_slots configuration updated, triggering reload for node %s",
                                        self.state_handler.name)
@@ -2293,7 +2293,7 @@ class Ha(object):
                         try:
                             logger.info("DEBUG: [FAILSAFE] Calling update_synchronized_standby_slots_if_needed() for node %s in failsafe mode",
                                        self.state_handler.name)
-                            config_updated = self.state_handler.config.update_synchronized_standby_slots_if_needed()
+                            config_updated = self.state_handler.config.update_synchronized_standby_slots_if_needed(self.cluster)
                             if config_updated:
                                 logger.info("DEBUG: [FAILSAFE] synchronized_standby_slots updated in failsafe mode for node %s",
                                            self.state_handler.name)
@@ -2314,7 +2314,7 @@ class Ha(object):
                     try:
                         logger.info("DEBUG: [DCS-FAIL] Calling update_synchronized_standby_slots_if_needed() for node %s in DCS failure mode",
                                    self.state_handler.name)
-                        config_updated = self.state_handler.config.update_synchronized_standby_slots_if_needed()
+                        config_updated = self.state_handler.config.update_synchronized_standby_slots_if_needed(self.cluster)
                         if config_updated:
                             logger.info("DEBUG: [DCS-FAIL] synchronized_standby_slots updated in DCS failure mode for node %s",
                                        self.state_handler.name)
