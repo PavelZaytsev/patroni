@@ -675,9 +675,9 @@ class Ha(object):
                 msg = "starting as a secondary"
                 node_to_follow = self._get_node_to_follow(self.cluster)
 
-                    if self.is_synchronous_mode():
-            logger.info("[SYNC-DEBUG] HA: Calling set_synchronous_standby_names(empty) from recover() - synchronous mode enabled")
-            self.state_handler.sync_handler.set_synchronous_standby_names(CaseInsensitiveSet())
+            if self.is_synchronous_mode():
+                logger.info("[SYNC-DEBUG] HA: Calling set_synchronous_standby_names(empty) from recover() - synchronous mode enabled")
+                self.state_handler.sync_handler.set_synchronous_standby_names(CaseInsensitiveSet())
 
         if self._async_executor.try_run_async('restarting after failure', self.state_handler.follow,
                                               args=(node_to_follow, role, timeout)) is None:
