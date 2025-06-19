@@ -1309,7 +1309,14 @@ class ConfigHandler(object):
     def set_synchronous_standby_names(self, value: Optional[str]) -> Optional[bool]:
         """Updates synchronous_standby_names and reloads if necessary.
         :returns: True if value was updated."""
-        if value != self._server_parameters.get('synchronous_standby_names'):
+        current_value = self._server_parameters.get('synchronous_standby_names')
+        logger.info("[SYNC-DEBUG] set_synchronous_standby_names called on node %s: current='%s', new='%s', pg_state='%s'", 
+                   self._postgresql.name, current_value, value, self._postgresql.state)
+        
+        if value != current_value:
+            logger.info("[SYNC-DEBUG] Updating synchronous_standby_names on node %s from '%s' to '%s'", 
+                       self._postgresql.name, current_value, value)
+            
             if value is None:
                 self._server_parameters.pop('synchronous_standby_names', None)
             else:
@@ -1319,12 +1326,22 @@ class ConfigHandler(object):
             # with synchronous_standby_names to ensure logical slots are synchronized to the same
             # physical standbys that are used for synchronous replication
             if self.pg_version >= 170000:
+                logger.info("[SYNC-DEBUG] PostgreSQL 17+ detected, updating synchronized_standby_slots on node %s", 
+                           self._postgresql.name)
                 self._update_synchronized_standby_slots_from_ssn(value)
             
             if self._postgresql.state == 'running':
+                logger.info("[SYNC-DEBUG] PostgreSQL is running on node %s, writing config and reloading", 
+                           self._postgresql.name)
                 self.write_postgresql_conf()
                 self._postgresql.reload()
+            else:
+                logger.info("[SYNC-DEBUG] PostgreSQL not running on node %s (state: %s), config will be written later", 
+                           self._postgresql.name, self._postgresql.state)
             return True
+        else:
+            logger.info("[SYNC-DEBUG] No change needed for synchronous_standby_names on node %s (already '%s')", 
+                       self._postgresql.name, current_value)
 
     def _update_synchronized_standby_slots_from_ssn(self, synchronous_standby_names: Optional[str]) -> None:
         """Update synchronized_standby_slots based on synchronous_standby_names for PostgreSQL 17+.
