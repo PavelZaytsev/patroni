@@ -19,7 +19,7 @@ bootstrap:
     maximum_lag_on_failover: 1048576
     synchronous_mode: true
     synchronous_mode_strict: true
-    synchronous_node_count: 2
+    synchronous_node_count: 1
     postgresql:
       use_pg_rewind: true
       use_slots: true
