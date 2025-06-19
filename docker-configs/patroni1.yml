@@ -1,11 +1,6 @@
 scope: demo
 name: patroni1
 
-# Synchronous replication settings
-synchronous_mode: true
-synchronous_mode_strict: true
-synchronous_node_count: 2  # Require at least 2 synchronous standbys
-
 restapi:
   listen: 0.0.0.0:8008
   connect_address: patroni1:8008
@@ -22,6 +17,9 @@ bootstrap:
     loop_wait: 10
     retry_timeout: 10
     maximum_lag_on_failover: 1048576
+    synchronous_mode: true
+    synchronous_mode_strict: true
+    synchronous_node_count: 2
     postgresql:
       use_pg_rewind: true
       use_slots: true
