@@ -1314,10 +1314,61 @@ class ConfigHandler(object):
                 self._server_parameters.pop('synchronous_standby_names', None)
             else:
                 self._server_parameters['synchronous_standby_names'] = value
+            
+            # PostgreSQL 17+ logical replication safety: Keep synchronized_standby_slots in sync
+            # with synchronous_standby_names to ensure logical slots are synchronized to the same
+            # physical standbys that are used for synchronous replication
+            if self.pg_version >= 170000:
+                self._update_synchronized_standby_slots_from_ssn(value)
+            
             if self._postgresql.state == 'running':
                 self.write_postgresql_conf()
                 self._postgresql.reload()
             return True
+
+    def _update_synchronized_standby_slots_from_ssn(self, synchronous_standby_names: Optional[str]) -> None:
+        """Update synchronized_standby_slots based on synchronous_standby_names for PostgreSQL 17+.
+        
+        This ensures logical replication slots are synchronized to the same physical standbys
+        that are used for synchronous replication, maintaining consistency and failover safety.
+        
+        :param synchronous_standby_names: The value being set for synchronous_standby_names
+        """
+        try:
+            from .sync import parse_sync_standby_names
+            
+            if not synchronous_standby_names or synchronous_standby_names.strip() == '':
+                # No synchronous standbys, clear synchronized_standby_slots
+                self._server_parameters.pop('synchronized_standby_slots', None)
+                logger.info("Cleared synchronized_standby_slots (no synchronous standbys) for PostgreSQL 17+ node %s", 
+                           self._postgresql.name)
+                return
+            
+            # Parse synchronous_standby_names to extract the actual standby names
+            ssn_data = parse_sync_standby_names(synchronous_standby_names)
+            
+            if ssn_data.has_star or ssn_data.sync_type == 'off':
+                # Don't set synchronized_standby_slots for wildcard or disabled sync
+                self._server_parameters.pop('synchronized_standby_slots', None)
+                logger.info("Cleared synchronized_standby_slots (wildcard or disabled sync) for PostgreSQL 17+ node %s", 
+                           self._postgresql.name)
+                return
+            
+            if ssn_data.members:
+                # Use the same standby names for synchronized_standby_slots
+                synchronized_value = ','.join(sorted(ssn_data.members))
+                self._server_parameters['synchronized_standby_slots'] = synchronized_value
+                logger.info("Updated synchronized_standby_slots to '%s' (matching synchronous_standby_names) for PostgreSQL 17+ node %s", 
+                           synchronized_value, self._postgresql.name)
+            else:
+                # No specific members, clear synchronized_standby_slots
+                self._server_parameters.pop('synchronized_standby_slots', None)
+                logger.info("Cleared synchronized_standby_slots (no specific members) for PostgreSQL 17+ node %s", 
+                           self._postgresql.name)
+                
+        except Exception as e:
+            logger.warning("Failed to update synchronized_standby_slots from synchronous_standby_names: %r", e)
+            # Don't fail the whole operation, just log the warning
 
     @property
     def effective_configuration(self) -> CaseInsensitiveDict:
