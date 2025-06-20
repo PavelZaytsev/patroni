@@ -441,11 +441,8 @@ class Postgresql(object):
     def set_enforce_hot_standby_feedback(self, value: bool) -> None:
         # If we enable or disable the hot_standby_feedback we need to update postgresql.conf and reload
         if self._enforce_hot_standby_feedback != value:
-            logger.info("DEBUG: set_enforce_hot_standby_feedback called, changing from %s to %s for node %s", 
-                        self._enforce_hot_standby_feedback, value, self.name)
             self._enforce_hot_standby_feedback = value
             if self.is_running():
-                logger.info("DEBUG: PostgreSQL is running, calling write_postgresql_conf from set_enforce_hot_standby_feedback")
                 self.config.write_postgresql_conf()
                 self.reload()
 
@@ -770,7 +767,6 @@ class Postgresql(object):
             return None
 
         self.config.check_directories()
-        logger.info("DEBUG: Calling write_postgresql_conf from start() method for node %s", self.name)
         self.config.write_postgresql_conf(configuration)
         self.config.resolve_connection_addresses()
         self.config.replace_pg_hba()
@@ -1158,7 +1154,6 @@ class Postgresql(object):
         ret = True
         if self.is_running():
             if do_reload:
-                logger.info("DEBUG: Calling write_postgresql_conf from follow() method (do_reload=True) for node %s", self.name)
                 self.config.write_postgresql_conf()
                 ret = self.reload(block_callbacks=change_role)
                 if ret and change_role:
