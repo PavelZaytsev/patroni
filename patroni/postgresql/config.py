@@ -1326,7 +1326,7 @@ class ConfigHandler(object):
             # with synchronous_standby_names to ensure logical slots are synchronized to the same
             # physical standbys that are used for synchronous replication
             if self.pg_version >= 170000:
-                logger.info("[SYNC-DEBUG] PostgreSQL 17+ detected, updating synchronized_standby_slots on node %s",
+                logger.info("[SYNC-DEBUG] PostgreSQL 17+ detected, checking dynamic synchronized_standby_slots config on node %s",
                            self._postgresql.name)
                 self._update_synchronized_standby_slots_from_ssn(value)
             
@@ -1346,6 +1346,15 @@ class ConfigHandler(object):
         
         :param synchronous_standby_names: The value being set for synchronous_standby_names
         """
+        # Check if dynamic synchronized_standby_slots is enabled
+        if not global_config.dynamic_synchronized_standby_slots_enabled:
+            logger.debug("[SYNC-DEBUG] dynamic_synchronized_standby_slots is disabled, skipping synchronized_standby_slots update for node %s",
+                        self._postgresql.name)
+            return
+        
+        logger.info("[SYNC-DEBUG] dynamic_synchronized_standby_slots is enabled, updating synchronized_standby_slots for node %s",
+                   self._postgresql.name)
+        
         try:
             from .sync import parse_sync_standby_names
             

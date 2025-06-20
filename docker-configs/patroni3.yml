@@ -20,6 +20,7 @@ bootstrap:
     synchronous_mode: true
     synchronous_mode_strict: true
     synchronous_node_count: 1
+    dynamic_synchronized_standby_slots: 'on'
     postgresql:
       use_pg_rewind: true
       use_slots: true
